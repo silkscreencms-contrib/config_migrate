@@ -1,0 +1,110 @@
+<?php
+
+/**
+ * Implements hook_menu().
+ */
+function config_migrate_menu() {
+  $items = array();
+
+  $items['admin/config/development/configuration/migrate'] = array(
+    'title' => 'Migrate',
+    'description' => 'Copy configuraiton data from one storage to another.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('config_migrate_admin_form'),
+    'access arguments' => array('synchronize configuration'),
+    'weight' => 50,
+    'type' => MENU_LOCAL_TASK,
+  );
+
+  return $items;
+}
+
+/**
+ * Defines the configuration migration form.
+ */
+function config_migrate_admin_form($form, &$form_state) {
+  global $config_directories;
+
+  $form['source'] = array(
+    '#type' => 'select',
+    '#title' => t('Source'),
+    '#options' => array('' => '-- SELECT --') + $config_directories,
+    '#required' => TRUE,
+    '#default_value' => '',
+  );
+  $form['target'] = array(
+    '#type' => 'select',
+    '#title' => t('Target'),
+    '#options' => array('' => '-- SELECT --') + $config_directories,
+    '#default_value' => '',
+    '#required' => TRUE,
+    '#description' => t('WARNING: ALL DATA IN THE SELECTED TARGET WILL BE ERASED.'),
+  );
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Submit'),
+  );
+  $form['#valudate'][] = 'config_migrate_admin_form_validate';
+  $form['#submit'][] = 'config_migrate_admin_form_submit';
+
+  return $form;
+}
+
+/**
+ * Leverages Batch API to copy the data from the source to the target.
+ */
+function config_migrate_admin_form_submit($form, &$form_state) {
+  $source = $form_state['values']['source'];
+  $target = $form_state['values']['target'];
+
+  $source_config = config_get_config_storage($source);
+  $target_config = config_get_config_storage($target);
+
+  $ops = array();
+
+  if (!$target_config->isInitialized()) {
+    $ops[] = array('_config_migrate_init_storage_op', array($target));
+  }
+
+  $ops[] = array('_config_migrate_delete_op', array($target));
+
+  foreach ($source_config->listAll() as $bucket) {
+    $ops[] = array('_config_migrate_copy_op', array($source, $target, $bucket));
+  }
+
+  $batch = array(
+    'title' => t('Migrating from %source to %target', array(
+      '%source' => $source,
+      '%target' => $target,
+    )),
+    'operations' => $ops,
+  );
+
+  batch_set($batch);
+}
+
+/**
+ * Defines a batch operation to initialize a configuration store.
+ */
+function _config_migrate_init_storage_op($config, &$context) {
+  config_get_config_storage($config)->initializeStorage();
+  $context['message'] = t('Initializing config storage at %storage', array('%storage' => $config));
+}
+
+/**
+ * Defines a batch operation to erase a configuration store.
+ */
+function _config_migrate_delete_op($config, &$context) {
+  config_get_config_storage($config)->deleteAll();
+  $context['message'] = t('Deleting everything from %storage', array('%storage' => $config));
+}
+
+/**
+ * Defines a batch operation to copy one piece of a configuration store.
+ */
+function _config_migrate_copy_op($source, $target, $bucket, &$context) {
+  watchdog('config_migrate', 'Copying @source:@bucket to @target', array('@source' => $source, '@target'=> $target, '@bucket' => $bucket), WATCHDOG_NOTICE);
+  config_get_config_storage($target)->write($bucket, config_get_config_storage($source)->read($bucket));
+  $context['message'] = t('Copying %bucket', array('%bucket' => $bucket));
+}
